@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>9m</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='80' fill='%23d4836b'>9</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,300;0,400;0,500;1,300;1,400&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    :root {
+      --bg:     #0b0a09;
+      --fg:     #cdc7be;
+      --dim:    #5a554e;
+      --salmon: #d4836b;
+      --bone:   #7a6e63;
+      --mono:   'IBM Plex Mono', 'Menlo', monospace;
+    }
+
+    body {
+      font-family: var(--mono);
+      color: var(--fg);
+      background: var(--bg);
+      overflow: hidden;
+      height: 100vh;
+      cursor: crosshair;
+    }
+
+    .pond { position: fixed; inset: 0; z-index: 0; }
+
+    .fish {
+      position: absolute;
+      font-size: 15px;
+      color: var(--salmon);
+      user-select: none;
+      pointer-events: none;
+      will-change: transform;
+      white-space: nowrap;
+    }
+
+    .bone {
+      position: absolute;
+      font-size: 13px;
+      color: var(--bone);
+      user-select: none;
+      pointer-events: none;
+      will-change: transform;
+      white-space: nowrap;
+    }
+
+    .bear {
+      position: absolute;
+      font-size: 32px;
+      color: #8B5E3C;
+      user-select: none;
+      pointer-events: none;
+      z-index: 2;
+      white-space: nowrap;
+      animation: breathe 4s ease-in-out infinite;
+    }
+
+    .hud {
+      position: fixed;
+      inset: 0;
+      z-index: 10;
+      pointer-events: none;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 2.5rem;
+    }
+
+    .brand {
+      font-size: 1.15rem;
+      font-weight: 500;
+      letter-spacing: .2em;
+      text-transform: uppercase;
+      opacity: 0;
+      animation: arrive .8s ease forwards;
+    }
+    .brand .nine { color: var(--salmon); }
+
+    .bottom {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+    }
+
+    .tagline {
+      font-size: .82rem;
+      font-weight: 300;
+      font-style: italic;
+      color: var(--dim);
+      opacity: 0;
+      animation: arrive .8s ease .3s forwards;
+      pointer-events: auto;
+      transition: color .4s ease;
+    }
+    .tagline:hover { color: var(--salmon); }
+
+    .counter {
+      font-size: .65rem;
+      letter-spacing: .12em;
+      color: var(--dim);
+      opacity: 0;
+      animation: arrive .8s ease .5s forwards;
+      font-variant-numeric: tabular-nums;
+    }
+
+    @keyframes arrive {
+      from { opacity: 0; transform: translateY(6px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes breathe {
+      0%, 100% { transform: translate(-50%,-50%) scale(1); }
+      50%      { transform: translate(-50%,-50%) scale(1.05); }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="pond" id="pond"></div>
+
+  <div class="hud">
+    <div class="brand"><span class="nine">9</span>m</div>
+    <div class="bottom">
+      <p class="tagline">you can do anything at 9m</p>
+      <span class="counter" id="counter">caught: 0</span>
+    </div>
+  </div>
+
+<script>
+const pond = document.getElementById('pond');
+const counterEl = document.getElementById('counter');
+
+/* ── tuning ── */
+const N           = 22;
+const BEAR_PULL   = 0.00015;
+const CURSOR_RAD  = 140;
+const CURSOR_STR  = 1.0;
+const WANDER      = 0.12;
+const DRAG        = 0.965;
+const CATCH_DIST  = 38;
+const MAX_SPEED   = 3.8;
+
+/* boids */
+const SEP_DIST    = 50;
+const SEP_STR     = 0.04;
+const ALIGN_DIST  = 100;
+const ALIGN_STR   = 0.02;
+const COHESION_DIST = 120;
+const COHESION_STR  = 0.003;
+
+let W = innerWidth, H = innerHeight;
+let mx = -9999, my = -9999;   /* off-screen until first move */
+let caught = 0;
+
+/* ── bear ── */
+const bearEl = document.createElement('div');
+bearEl.className = 'bear';
+bearEl.textContent = '\u{0295}\u25C9\u1D25\u25C9\u{0294}';
+bearEl.style.left = '50%';
+bearEl.style.top = '50%';
+pond.appendChild(bearEl);
+
+/* ── fish ── */
+const fish = [];
+const bones = [];
+
+function edgeSpawn() {
+  const edge = Math.random() * 4 | 0;
+  if (edge === 0) return { x: Math.random() * W, y: -30 };
+  if (edge === 1) return { x: W + 30, y: Math.random() * H };
+  if (edge === 2) return { x: Math.random() * W, y: H + 30 };
+  return { x: -30, y: Math.random() * H };
+}
+
+for (let i = 0; i < N; i++) {
+  const el = document.createElement('div');
+  el.className = 'fish';
+  el.textContent = '<><';
+  pond.appendChild(el);
+  fish.push({
+    x: Math.random() * W,
+    y: Math.random() * H,
+    vx: (Math.random() - .5) * 2,
+    vy: (Math.random() - .5) * 2,
+    el,
+    alive: true,
+    respawn: 0,
+  });
+}
+
+/* ── bones (fallen fish bits) ── */
+function spawnBone(x, y) {
+  const el = document.createElement('div');
+  el.className = 'bone';
+  el.textContent = Math.random() > .5 ? '<' : '>';
+  pond.appendChild(el);
+  bones.push({
+    x, y,
+    vx: (Math.random() - .5) * 1.5,
+    vy: -Math.random() * 1.5,
+    life: 1,         /* 1 → 0 */
+    el,
+  });
+}
+
+/* ── input ── */
+document.addEventListener('mousemove', e => { mx = e.clientX; my = e.clientY; });
+window.addEventListener('resize', () => { W = innerWidth; H = innerHeight; });
+
+/* ── clamp speed ── */
+function clampV(f) {
+  const s = Math.hypot(f.vx, f.vy);
+  if (s > MAX_SPEED) { f.vx *= MAX_SPEED / s; f.vy *= MAX_SPEED / s; }
+}
+
+/* ── loop ── */
+(function tick() {
+  const bcx = W / 2, bcy = H / 2;
+
+  /* ─ fish ─ */
+  for (let i = 0; i < fish.length; i++) {
+    const f = fish[i];
+
+    if (!f.alive) {
+      f.respawn--;
+      if (f.respawn <= 0) {
+        const sp = edgeSpawn();
+        f.x = sp.x; f.y = sp.y;
+        f.vx = (Math.random() - .5) * 2;
+        f.vy = (Math.random() - .5) * 2;
+        f.alive = true;
+        f.el.style.opacity = '1';
+        f.el.textContent = '<><';
+      }
+      continue;
+    }
+
+    /* bear gravity */
+    const dbx = bcx - f.x, dby = bcy - f.y;
+    const bd = Math.hypot(dbx, dby) || 1;
+    f.vx += (dbx / bd) * BEAR_PULL * bd;
+    f.vy += (dby / bd) * BEAR_PULL * bd;
+
+    /* cursor repulsion */
+    const dcx = f.x - mx, dcy = f.y - my;
+    const cd = Math.hypot(dcx, dcy) || 1;
+    if (cd < CURSOR_RAD) {
+      const push = (1 - cd / CURSOR_RAD) * CURSOR_STR;
+      f.vx += (dcx / cd) * push;
+      f.vy += (dcy / cd) * push;
+    }
+
+    /* boids: separation, alignment, cohesion */
+    let sx = 0, sy = 0;
+    let ax = 0, ay = 0, ac = 0;
+    let cx = 0, cy = 0, cc = 0;
+
+    for (let j = 0; j < fish.length; j++) {
+      if (j === i || !fish[j].alive) continue;
+      const o = fish[j];
+      const dx = f.x - o.x, dy = f.y - o.y;
+      const d = Math.hypot(dx, dy) || 1;
+
+      if (d < SEP_DIST) {
+        sx += (dx / d) / d;
+        sy += (dy / d) / d;
+      }
+      if (d < ALIGN_DIST) {
+        ax += o.vx; ay += o.vy; ac++;
+      }
+      if (d < COHESION_DIST) {
+        cx += o.x; cy += o.y; cc++;
+      }
+    }
+
+    f.vx += sx * SEP_STR;
+    f.vy += sy * SEP_STR;
+    if (ac > 0) {
+      f.vx += ((ax / ac) - f.vx) * ALIGN_STR;
+      f.vy += ((ay / ac) - f.vy) * ALIGN_STR;
+    }
+    if (cc > 0) {
+      f.vx += ((cx / cc - f.x)) * COHESION_STR;
+      f.vy += ((cy / cc - f.y)) * COHESION_STR;
+    }
+
+    /* wander */
+    f.vx += (Math.random() - .5) * WANDER;
+    f.vy += (Math.random() - .5) * WANDER;
+
+    /* integrate */
+    f.vx *= DRAG;
+    f.vy *= DRAG;
+    clampV(f);
+    f.x += f.vx;
+    f.y += f.vy;
+
+    /* catch check */
+    if (bd < CATCH_DIST) {
+      f.alive = false;
+      f.respawn = 120;
+      f.el.style.opacity = '0';
+      spawnBone(f.x, f.y);
+      caught++;
+      counterEl.textContent = `caught: ${caught}`;
+    }
+
+    /* face direction */
+    const txt = f.vx < 0 ? '><>' : '<><';
+    if (f.el.textContent !== txt) f.el.textContent = txt;
+    f.el.style.transform = `translate(${f.x}px, ${f.y}px)`;
+  }
+
+  /* ─ bones: gravity + fade ─ */
+  for (let i = bones.length - 1; i >= 0; i--) {
+    const b = bones[i];
+    b.vy += 0.08;          /* gravity */
+    b.vx *= 0.99;
+    b.x += b.vx;
+    b.y += b.vy;
+    b.life -= 0.004;
+
+    if (b.life <= 0 || b.y > H + 40) {
+      b.el.remove();
+      bones.splice(i, 1);
+      continue;
+    }
+
+    b.el.style.transform = `translate(${b.x}px, ${b.y}px)`;
+    b.el.style.opacity = b.life;
+  }
+
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
